@@ -38,17 +38,36 @@ def usb_read_test():
 
 def i2c_test():
     # Open i2c-0 controller
-    i2c = I2C("/dev/i2c-17")
+    i2c = I2C("/dev/i2c-18")
 
     # Define the I2C address of the target device
     device_address = 0x50
+    # Define your additional flags
+    I2C_FLAG_FIND_DEVICE = 8
+    I2C_FLAG_READ_BYTE = 9
+    I2C_FLAG_3 = 10
+
+    flags = 0 | I2C_FLAG_FIND_DEVICE | I2C_FLAG_READ_BYTE
 
     # Create a list of messages to send
     message_to_send = "TEST".encode('utf-8')
     messages = [
-        I2C.Message(message_to_send),
-        I2C.Message(data=[0x00, 0x00, 0x00, 0x00], read=True, flags=0),]
-
+        # I2C.Message(message_to_send, flags=flags),
+        # I2C.Message(message_to_send, flags=0),
+        I2C.Message(message_to_send, flags=0),
+        I2C.Message(message_to_send, flags=0),
+        I2C.Message(message_to_send, flags=0),
+        I2C.Message(message_to_send, flags=0),
+        # I2C.Message(data=[0x00, 0x00, 0x00, 0x00], read=True, flags=0),
+    ]
+    # messages[0].flags = 0
+    # messages[1].flags = I2C_FLAG_FIND_DEVICE
+    # messages[2].flags = I2C_FLAG_READ_BYTE
+    # messages[3].flags = I2C_FLAG_3
+    print(messages[0].flags)
+    print(messages[1].flags)
+    print(messages[2].flags)
+    print(messages[3].flags)
     # Transfer the list of messages to the target device
     i2c.transfer(device_address, messages)
 

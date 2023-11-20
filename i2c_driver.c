@@ -12,7 +12,7 @@
 
 /* Meta Information */
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("JAKUBIK");
+MODULE_AUTHOR("KUBA");
 MODULE_DESCRIPTION("Driver for stm32 i2c device");
 
 #define VENDOR_ID 0x2312
@@ -28,6 +28,15 @@ MODULE_DESCRIPTION("Driver for stm32 i2c device");
 #define CMD_I2C_IO 4
 #define CMD_I2C_IO_BEGIN (1 << 0)
 #define CMD_I2C_IO_END (1 << 1)
+
+#define I2C_FLAG_FIND_DEVICE 8 /* your new flag 1 */
+#define I2C_FLAG_READ_BYTE 9   /* your new flag 2 */
+#define I2C_FLAG_3 10          /* your new flag 3 */
+#define I2C_FLAG_4 0x80000     /* your new flag 4 */
+#define I2C_FLAG_5 0x100000    /* your new flag 5 */
+
+#define CMD_I2C_FIND_DEVICE 0x5d
+#define CMD_I2C_READ_BYTE 0x5e
 
 #define CMD_READ_FROM_BUFFER 0x5c
 #define CMD_WRITE_TO_BUFFER 0x5b
@@ -60,7 +69,6 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs,
     unsigned char status;
     struct i2c_msg *pmsg;
     int i;
-
     dev_info(&adapter->dev, "master xfer %d messages:\n", num);
 
     for (i = 0; i < num; i++) {
@@ -70,24 +78,27 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs,
                  pmsg->flags & I2C_M_RD ? "read" : "write", pmsg->flags,
                  pmsg->len, pmsg->addr);
 
-        // tu trzeba zrobić wybór CMD po switch case i lecimy wysyłanie
-        // odpowiedniego CMD
+        printk("FLAGS - %d \t %d, %d, %d, %d", pmsg->flags,
+               pmsg->flags & I2C_M_RD, pmsg->flags & I2C_FLAG_READ_BYTE,
+               pmsg->flags & I2C_FLAG_FIND_DEVICE, pmsg->flags & I2C_FLAG_3);
 
-        /* and directly send the message */
         if (pmsg->flags & I2C_M_RD) {
             /* read data */
             dev_info(&adapter->dev,
                      "CMD: %d, CMD_READ_FROM_BUFFER: %s BUF_LEN: %d",
-                     CMD_WRITE_TO_BUFFER, pmsg->buf, pmsg->len);
+                     CMD_READ_FROM_BUFFER, pmsg->buf, pmsg->len);
 
             if (usb_read(adapter, CMD_READ_FROM_BUFFER, pmsg->flags, pmsg->addr,
                          pmsg->buf, 4) < 0) {
                 dev_err(&adapter->dev, "failure reading data\n");
                 return -EREMOTEIO;
             }
-        } else {
+        }
+
+        else {
             /* write data */
-            dev_info(&adapter->dev, "CMD: %d, BUF: %s BUF_LEN: %d",
+            dev_info(&adapter->dev,
+                     "CMD: %d, CMD_WRITE_TO_BUFFER, BUF: %s BUF_LEN: %d",
                      CMD_WRITE_TO_BUFFER, pmsg->buf, pmsg->len);
 
             if (usb_write(adapter, CMD_WRITE_TO_BUFFER, cpu_to_le16(10), 0,
@@ -96,29 +107,12 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs,
                 return -EREMOTEIO;
             }
         }
-
-        /* read status */
-        // if (usb_read(adapter, CMD_GET_STATUS, 0, 0, &status, 1) != 1) {
-        //     dev_err(&adapter->dev, "failure reading status\n");
-        //     return -EREMOTEIO;
-        // }
-
-        // dev_info(&adapter->dev, "  status = %d\n", status);
-        // if (status == STATUS_ADDRESS_NAK) return -EREMOTEIO;
     }
 
     return i;
 }
 
 static uint32_t usb_func(struct i2c_adapter *adapter) {
-    /* get functionality from adapter
-    uint32_t func;
-    if (usb_read(adapter, 0x5c, 0, 0, &func, sizeof(func)) != sizeof(func)) {
-        dev_err(&adapter->dev, "failure reading functionality\n");
-        return 0;
-    }
-    return func; */
-
     return (I2C_FUNC_I2C | I2C_FUNC_SMBUS_QUICK | I2C_FUNC_SMBUS_BYTE |
             I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA |
             I2C_FUNC_SMBUS_BLOCK_DATA);
@@ -161,7 +155,6 @@ static int usb_read(struct i2c_adapter *adapter, int cmd, int value, int index,
     if (!dmadata) return -ENOMEM;
 
     /* do control transfer */
-    /* TODO bmRequestType understand */
     status = usb_control_msg(dev->usb_dev, usb_rcvctrlpipe(dev->usb_dev, 0),
                              cmd, 0xc0, value, index, dmadata, len, 2000);
 
@@ -181,14 +174,9 @@ static int usb_write(struct i2c_adapter *adapter, int cmd, int value, int index,
                      void *data, int len) {
     struct i2c_over_usb *dev = (struct i2c_over_usb *)adapter->algo_data;
 
-    // /* do control transfer */
-    // return usb_control_msg(dev->usb_dev, usb_sndctrlpipe(dev->usb_dev, 0),
-    // cmd,
-    //                        USB_TYPE_VENDOR | USB_RECIP_INTERFACE, value,
-    //                        index, data, len, 2000);
+    /* do control transfer */
     printk("Sending message: %s", data);
     int return_val;
-    /* TODO bmRequestType understand */
 
     return_val =
         usb_control_msg(dev->usb_dev, usb_sndctrlpipe(dev->usb_dev, 0), cmd,
@@ -198,7 +186,6 @@ static int usb_write(struct i2c_adapter *adapter, int cmd, int value, int index,
     }
 
     return return_val;
-    // return usb_control_msg(dev->usb_dev, 0, 0x5b, 0x40, 0, 0, "Siema", 4, 0);
 }
 
 static void i2c_over_usb_free(struct i2c_over_usb *dev) {
@@ -249,17 +236,14 @@ static int i2c_over_usb_probe(struct usb_interface *interface,
              "i2c-over-usb at bus %03d device %03d", dev->usb_dev->bus->busnum,
              dev->usb_dev->devnum);
 
-    // int result = usb_write(&dev->adapter, 0x5b, cpu_to_le16(10), 0, "SIEM",
-    // 4);
+    int result = usb_write(&dev->adapter, 0x5b, cpu_to_le16(10), 0, "TEST", 4);
 
-    // if (result < 0) {
-    //     dev_err(&dev->adapter.dev, "failure setting delay to %dus\n", delay);
-    //     printk("i2c_driver - error usb_write %d", result);
-    //     retval = -EIO;
-    //     if (dev) i2c_over_usb_free(dev);
-
-    //     return retval;
-    // }
+    if (result < 0) {
+        dev_err(&dev->adapter.dev, "failure test communication %d\n ", result);
+        retval = -EIO;
+        if (dev) i2c_over_usb_free(dev);
+        return retval;
+    }
 
     dev->adapter.dev.parent = &dev->interface->dev;
 
