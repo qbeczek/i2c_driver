@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/proc_fs.h>
 #include <linux/usb.h>
+// #include <stddef.h>
 
 /* Meta Information */
 MODULE_LICENSE("GPL");
@@ -52,11 +53,11 @@ MODULE_PARM_DESC(delay,
                  "bit delay in microseconds, "
                  "e.g. 10 for 100kHz (default is 100kHz)");
 
-static int usb_read(struct i2c_adapter *adapter, int cmd, int value, int index,
-                    void *data, int len);
+static int usb_read(struct i2c_adapter *adapter, int request, int value,
+                    int index, void *data, int size);
 
 static int usb_write(struct i2c_adapter *adapter, int cmd, int value, int index,
-                     void *data, int len);
+                     void *data, int size);
 
 void print_buffer(__u8 *buf, size_t buf_size) {
     for (size_t i = 0; i < buf_size; i++) {
@@ -78,9 +79,9 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs,
                  pmsg->flags & I2C_M_RD ? "read" : "write", pmsg->flags,
                  pmsg->len, pmsg->addr);
 
-        printk("FLAGS - %d \t %d, %d, %d, %d", pmsg->flags,
-               pmsg->flags & I2C_M_RD, pmsg->flags & I2C_FLAG_READ_BYTE,
-               pmsg->flags & I2C_FLAG_FIND_DEVICE, pmsg->flags & I2C_FLAG_3);
+        // printk("FLAGS - %d \t %d, %d, %d, %d", pmsg->flags,
+        //        pmsg->flags & I2C_M_RD, pmsg->flags & I2C_FLAG_READ_BYTE,
+        //        pmsg->flags & I2C_FLAG_FIND_DEVICE, pmsg->flags & I2C_FLAG_3);
 
         if (pmsg->flags & I2C_M_RD) {
             /* read data */
@@ -89,7 +90,7 @@ static int usb_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs,
                      CMD_READ_FROM_BUFFER, pmsg->buf, pmsg->len);
 
             if (usb_read(adapter, CMD_READ_FROM_BUFFER, pmsg->flags, pmsg->addr,
-                         pmsg->buf, 4) < 0) {
+                         pmsg->buf, pmsg->len) < 0) {
                 dev_err(&adapter->dev, "failure reading data\n");
                 return -EREMOTEIO;
             }
@@ -144,43 +145,54 @@ struct i2c_over_usb {
     struct i2c_adapter adapter;      /* i2c related things */
 };
 
-static int usb_read(struct i2c_adapter *adapter, int cmd, int value, int index,
-                    void *data, int len) {
+static int usb_read(struct i2c_adapter *adapter, int request, int value,
+                    int index, void *data, int size) {
     struct i2c_over_usb *dev = (struct i2c_over_usb *)adapter->algo_data;
     char text[32];
     int status;
-    /* do control transfer */
-    uint8_t *dmadata = kzalloc(len, GFP_KERNEL);
+    int transferred;
+    uint8_t *buffer = kzalloc(64, GFP_KERNEL);
 
-    if (!dmadata) return -ENOMEM;
+    if (!buffer) return -ENOMEM;
 
     /* do control transfer */
-    status = usb_control_msg(dev->usb_dev, usb_rcvctrlpipe(dev->usb_dev, 0),
-                             cmd, 0xc0, value, index, dmadata, len, 2000);
+    printk("Buffer size: %zu, Transferred before: %zu\n", sizeof(buffer),
+           transferred);
+    status = usb_bulk_msg(dev->usb_dev, usb_rcvbulkpipe(dev->usb_dev, 0x81),
+                          buffer, 64, &transferred, 1000);
+    printk("Transferred after: %zu\n", transferred);
+
+    // status = usb_control_msg(dev->usb_dev, usb_rcvctrlpipe(dev->usb_dev, 0),
+    //                          request, 0xc0, value, index, buffer, size,
+    //                          2000);
 
     if (status < 0)
         printk("i2c_driver: control usb_read error: %d", status);
     else
-        printk("i2c_driver: data received: %s", dmadata);
+        printk("i2c_driver: data received: %s", buffer);
 
-    memcpy(data, dmadata, len);
-
-    kfree(dmadata);
+    memcpy(data, buffer, size);
+    kfree(buffer);
 
     return status;
 }
 
-static int usb_write(struct i2c_adapter *adapter, int cmd, int value, int index,
-                     void *data, int len) {
+static int usb_write(struct i2c_adapter *adapter, int request, int value,
+                     int index, void *data, int size) {
     struct i2c_over_usb *dev = (struct i2c_over_usb *)adapter->algo_data;
+    int transferred;
+    long val;
 
-    /* do control transfer */
-    printk("Sending message: %s", data);
     int return_val;
 
-    return_val =
-        usb_control_msg(dev->usb_dev, usb_sndctrlpipe(dev->usb_dev, 0), cmd,
-                        0x40, value, 0, (uint8_t *)data, sizeof(data), 100);
+    return_val = usb_bulk_msg(dev->usb_dev, usb_sndbulkpipe(dev->usb_dev, 1),
+                              (uint8_t *)data, sizeof(data), &transferred, 100);
+    printk("Trasnferred %d", transferred);
+    printk("Sending message: %s", (uint8_t *)data);
+    // return_val =
+    //     usb_control_msg(dev->usb_dev, usb_sndctrlpipe(dev->usb_dev, 0),
+    //     request,
+    //                     0x40, value, 0, (uint8_t *)data, sizeof(data), 100);
     if (return_val < 0) {
         printk("Control usb_write error: %d", return_val);
     }
@@ -236,6 +248,11 @@ static int i2c_over_usb_probe(struct usb_interface *interface,
              "i2c-over-usb at bus %03d device %03d", dev->usb_dev->bus->busnum,
              dev->usb_dev->devnum);
 
+    dev->adapter.dev.parent = &dev->interface->dev;
+
+    /* and finally attach to i2c layer */
+    i2c_add_adapter(&dev->adapter);
+
     int result = usb_write(&dev->adapter, 0x5b, cpu_to_le16(10), 0, "TEST", 4);
 
     if (result < 0) {
@@ -244,11 +261,7 @@ static int i2c_over_usb_probe(struct usb_interface *interface,
         if (dev) i2c_over_usb_free(dev);
         return retval;
     }
-
-    dev->adapter.dev.parent = &dev->interface->dev;
-
-    /* and finally attach to i2c layer */
-    i2c_add_adapter(&dev->adapter);
+    usb_clear_halt(dev->usb_dev, usb_rcvbulkpipe(dev->usb_dev, 1));
 
     /* inform user about successful attachment to i2c layer */
     dev_info(&dev->adapter.dev, "connected i2c_over_usbdevice\n");
